@@ -3,12 +3,12 @@ import json
 from dataclasses import dataclass
 from typing import Dict
 
-from core.protocol.base_protocol import CFMSBaseProtocol, CFMSProtocolError, ConnectionFlag
+from core.protocol.base_protocol import CFMSBaseProtocol, CFMSProtocolError, ConnectionFlag, CFMCBaseConnection
 from utils.crypto import CryptoContext
 
 
 @dataclass()
-class CfmsComConnection(object):
+class CfmsComConnection(CFMCBaseConnection):
     reader: asyncio.StreamReader | None = None
     writer: asyncio.StreamWriter | None = None
     crypto: CryptoContext | None = None
