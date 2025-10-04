@@ -33,14 +33,14 @@ class CfmsServer:
         # 配置日志处理器
         self.logger = logging.getLogger("CFMSServer")
 
-    async def _send_error(self, writer, exc: AppException):
+    async def _send_error(self, conn, exc: AppException):
         """统一错误响应方法"""
         response = {
             "status": "error",
             "code": exc.code,
             "message": exc.message
         }
-        await self.protocol.write(response, writer)
+        await self.protocol.write(response, conn)
 
     async def init_db(self):
         self.logger.info("正在连接数据库...")
@@ -60,8 +60,13 @@ class CfmsServer:
             username, password = auth_data["username"], auth_data["password"]
             # 数据库验证
             user = await User.objects.get_by_username(username=username)  # type: ignore
-            if not user or not await user.verify_password(password):
-                await self._send_error(writer, AuthenticationError("认证失败"))
+
+            if not user:
+                await self._send_error(conn, AuthenticationError("User not found."))
+                self.logger.info(f"User: {username} fall to login{writer.get_extra_info(name="peername")}. User not found.")
+                return
+            if not await user.verify_password(password):
+                await self._send_error(conn, AuthenticationError("Password incorrect."))
                 self.logger.info(f"User: {username} fall to login.{writer.get_extra_info(name="peername")}")
                 return
             self.logger.info(f"User: {username} login successfully.{writer.get_extra_info(name="peername")}")
@@ -108,9 +113,12 @@ class CfmsServer:
             await self._terminal.start_interface()
         try:
             self.logger.info("正在启动CFMS服务器...")
-            await self.init_db()
+            try:
+                await self.init_db()
+            except Exception as e:
+                self.logger.error(e)
+
             await self.auth_service.init_keys()
-            self.logger.info("OK")
             self._server_task = self._main_loop.create_task(self._server_forever())
             await asyncio.wait([self._server_task])  # 等待关闭事件触发
         finally:
@@ -132,13 +140,13 @@ class CfmsServer:
     async def shutdown(self):
         self._stop_flag.set()
         self.logger.info("正在关闭服务器...")
-        if not self._server_task.cancelled():
+        if self._server_task and not self._server_task.cancelled():
             self._server_task.cancel()
+            tasks = [t for t in self.active_tasks if t is not asyncio.current_task()]
+            for task in tasks:
+                task.cancel()
+            self.logger.info(f"强制关闭了{len(self.active_tasks)}个客户端连接。")
 
-        tasks = [t for t in self.active_tasks if t is not asyncio.current_task()]
-        for task in tasks:
-            task.cancel()
-        self.logger.info(f"强制关闭了{len(self.active_tasks)}个客户端连接。")
         self.logger.info("正在关闭数据库连接...")
         await Tortoise.close_connections()
         if self._use_terminal:
