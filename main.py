@@ -31,7 +31,7 @@ async def main():
         logger.info("⚠️ Windows系统不支持uvloop加速")
 
     # 启动文件服务器
-    server = CfmsServer(logger=logger, use_terminal=True)
+    server = CfmsServer(logger=logger, use_terminal=False)
     await server.start()
 
 

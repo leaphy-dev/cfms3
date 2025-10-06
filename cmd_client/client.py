@@ -1,7 +1,7 @@
 import asyncio
 import logging
 
-from core.protocol.command_protocol import CFMSProtocol, ConnectionFlag, CfmsComConnection
+from core.protocol.cfms_protocol import CFMSProtocol, ConnectionFlag, CfmsComConnection
 from utils.crypto import CryptoContext  # 假设与服务器使用相同的加密模块
 
 
@@ -26,10 +26,10 @@ class TestClient:
 
         # ========== 用户认证 ==========
         # 发送测试凭证（根据服务器配置修改）
-        await self.protocol.write({"username": "admin", "password": "123456"}, conn)
+        await self.protocol.send_command({"username": "admin", "password": "123456"}, conn)
 
         # 接收令牌
-        recv_token = await self.protocol.read(conn)
+        recv_token = await self.protocol.recv_command(conn)
         self.encrypted_token = recv_token["token"]
         self.logger.info(f"认证成功，令牌: {self.encrypted_token}...")
 
@@ -59,7 +59,7 @@ class TestClient:
                     await self.conn.close()
                     break
 
-                await self.protocol.write({"request": cmd, "token": self.encrypted_token}, self.conn)
+                await self.protocol.send_command({"request": cmd, "token": self.encrypted_token}, self.conn)
 
             except Exception as e:
                 self.logger.error(f"发送失败: {str(e)}")

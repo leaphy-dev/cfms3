@@ -7,7 +7,7 @@ from config import SQLITE_TEMPLATE
 from core.auth.auth_service import AuthService
 from core.database.models import User
 from core.exception import *
-from core.protocol.command_protocol import CFMSProtocol, ConnectionFlag, CfmsComConnection
+from core.protocol.cfms_protocol import CFMSProtocol, ConnectionFlag, CfmsComConnection
 from core.server_cmd import CFMSTerminal
 
 
@@ -16,7 +16,7 @@ class CfmsServer:
                  host='0.0.0.0',
                  port=8888,
                  logger=logging.getLogger(f"CFMSServer"),
-                 use_terminal: bool = True):
+                 use_terminal: bool = False):
         self.logger = logger
         self._main_loop: asyncio.AbstractEventLoop = asyncio.get_event_loop()
         self._server_task = None
@@ -40,7 +40,7 @@ class CfmsServer:
             "code": exc.code,
             "message": exc.message
         }
-        await self.protocol.write(response, conn)
+        await self.protocol.send_command(response, conn)
 
     async def init_db(self):
         self.logger.info("正在连接数据库...")
@@ -54,29 +54,9 @@ class CfmsServer:
             # 握手
             await self.protocol.server_side_shake_hand(conn)
             self.logger.info(f"来自{writer.get_extra_info(name="peername")}的连接")
-            # 用户认证
-            # 接收加密的认证信息
-            auth_data = await self.protocol.read(conn)
-            username, password = auth_data["username"], auth_data["password"]
-            # 数据库验证
-            user = await User.objects.get_by_username(username=username)  # type: ignore
-
-            if not user:
-                await self._send_error(conn, AuthenticationError("User not found."))
-                self.logger.info(f"User: {username} fall to login{writer.get_extra_info(name="peername")}. User not found.")
-                return
-            if not await user.verify_password(password):
-                await self._send_error(conn, AuthenticationError("Password incorrect."))
-                self.logger.info(f"User: {username} fall to login.{writer.get_extra_info(name="peername")}")
-                return
-            self.logger.info(f"User: {username} login successfully.{writer.get_extra_info(name="peername")}")
-
-            # 生成令牌
-            token = self.auth_service.generate_token(user.id, 1)  # <--- 令牌在此生成
-            await self.protocol.write({"token": token}, conn)
 
             # 创建子协程
-            task = self._main_loop.create_task(self.handel_request(token, conn))
+            task = self._main_loop.create_task(self.handler(conn))
             self.active_tasks.add(task)
             task.add_done_callback(self.active_tasks.discard)
 
@@ -87,12 +67,37 @@ class CfmsServer:
             await writer.wait_closed()
             raise e
 
-    async def handel_request(self, token, conn):
+    async def handler(self, conn: CfmsComConnection):
         # 实现文件操作和权限验证逻辑
         try:
             while True:
-                data = await self.protocol.read(conn)
-                self.logger.debug(f"received message:{data}")
+        # 用户认证
+        # 接收加密的认证信息
+                auth_data = await self.protocol.recv_command(conn)
+                if not auth_data:
+                    continue
+                username, password = auth_data["username"], auth_data["password"]
+                # 数据库验证
+                user = await User.objects.get_by_username(username=username)  # type: ignore
+
+                if not user:
+                    await self._send_error(conn, AuthenticationError("User not found."))
+                    self.logger.info(f"User: {username} fall to login{conn.get_extra_info(name="peername")}. User not found.")
+                    continue
+
+                if not await user.verify_password(password):
+                    await self._send_error(conn, AuthenticationError("Password incorrect."))
+                    self.logger.info(f"User: {username} fall to login.{conn.get_extra_info(name="peername")}")
+                    continue
+                self.logger.info(f"User: {username} login successfully.{conn.get_extra_info(name="peername")}")
+
+
+                # 生成令牌
+                token = self.auth_service.generate_token(user.id, 1)  # <--- 令牌在此生成
+                await self.protocol.send_command({"token": token}, conn)
+                data = await self.protocol.recv_command(conn)
+                self.logger.debug(f"received message:{data}") # test
+
                 if not data:
                     self.logger.info(f"{conn.writer.get_extra_info(name="peername")}断开了连接")
                     break
@@ -105,7 +110,7 @@ class CfmsServer:
                 else:
                     break
         finally:
-            conn.close()
+            await conn.close()
 
     async def start(self):
         if self._use_terminal:
